@@ -37,7 +37,6 @@ const totalNodesCount = computed(() => {
     return (subscriptions.value || []).reduce((acc, sub) => acc + (sub.nodeCount || 0), 0);
 });
 
-const activeSubscriptionsCount = computed(() => (activeSubscriptions || []).length);
 const subscriptionsCount = computed(() => (subscriptions.value || []).length);
 const activeProfilesCount = computed(() => (activeProfiles || []).length);
 
@@ -68,6 +67,10 @@ const {
   showModal: showBulkImportModal,
   handleBulkImport
 } = useBulkImportLogic({ addSubscriptionsFromBulk, addNodesFromBulk });
+
+const openBulkImportModal = () => {
+    showBulkImportModal.value = true;
+};
 
 const BulkImportModal = defineAsyncComponent(() => import('../components/modals/BulkImportModal.vue'));
     
@@ -110,7 +113,7 @@ const handleQRCode = (url, title) => {
     </div>
     
     <template v-else>
-      <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
+      <div class="mb-4 bg-white/80 dark:bg-gray-900/60 border border-gray-100/80 dark:border-white/10 misub-radius-lg p-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h1 class="text-2xl font-bold text-gray-900 dark:text-white">仪表盘</h1>
           <p class="mt-1 text-sm font-medium text-gray-600 dark:text-gray-400 flex items-center gap-2">
@@ -123,13 +126,13 @@ const handleQRCode = (url, title) => {
           </p>
         </div>
         
-        <div class="flex flex-wrap items-center gap-2">
+        <div class="flex flex-wrap items-center gap-2 w-full md:w-auto">
             <button @click="showLogModal = true" class="flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-white/80 text-gray-700 hover:bg-white dark:bg-gray-900/60 dark:text-gray-300 dark:hover:bg-gray-900 misub-radius-lg transition-colors border border-gray-200/80 dark:border-white/10 shadow-sm">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
                 订阅日志
             </button>
 
-            <button @click="showBulkImportModal = true" class="px-4 py-2 text-sm font-medium bg-gray-100/80 text-gray-800 hover:bg-gray-200/80 dark:bg-gray-800/60 dark:text-gray-200 dark:hover:bg-gray-700/70 misub-radius-lg transition-colors">
+            <button @click="openBulkImportModal" class="px-4 py-2 text-sm font-medium bg-gray-100/80 text-gray-800 hover:bg-gray-200/80 dark:bg-gray-800/60 dark:text-gray-200 dark:hover:bg-gray-700/70 misub-radius-lg transition-colors">
                 批量导入
             </button>
             <button @click="handleAddProfile" class="px-4 py-2 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 misub-radius-lg transition-colors shadow-sm shadow-primary-500/20">
@@ -141,20 +144,20 @@ const handleQRCode = (url, title) => {
       <StatCards
         :formatted-total-remaining-traffic="formattedTotalRemainingTraffic"
         :traffic-stats="trafficStats"
-        :active-subscriptions-count="activeSubscriptionsCount"
+        :active-subscriptions-count="enabledSubscriptionsCount"
         :subscriptions-count="subscriptionsCount"
         :total-nodes-count="totalNodesCount"
         :active-profiles-count="activeProfilesCount"
       />
 
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="lg:col-span-2 space-y-6">
-             <div class="bg-white/90 dark:bg-gray-900/80 p-6 misub-radius-lg shadow-sm border border-gray-100/80 dark:border-white/10 min-h-[340px]">
+             <div class="bg-white/90 dark:bg-gray-900/80 p-5 misub-radius-lg shadow-sm border border-gray-100/80 dark:border-white/10 min-h-[320px]">
                 <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                     使用指南
                 </h3>
-                <div class="grid md:grid-cols-2 gap-4">
+                <div class="grid md:grid-cols-2 gap-3">
                     <div class="p-4 bg-white/80 dark:bg-gray-900/70 misub-radius-lg border border-gray-200/60 dark:border-white/10">
                          <h4 class="font-medium text-gray-900 dark:text-gray-200 mb-2">1. 添加机场订阅</h4>
                          <p class="text-sm text-gray-500 dark:text-gray-400">前往 <b>机场订阅</b> 页面，点击"新增订阅"或"批量导入"，填入您的机场订阅链接。</p>
@@ -211,3 +214,4 @@ const handleQRCode = (url, title) => {
     </template>
   </div>
 </template>
+

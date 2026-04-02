@@ -47,7 +47,8 @@ const emit = defineEmits([
   'deduplicate',
   'toggle-sort',
   'delete-all',
-  'toggle-selection-mode'
+  'toggle-selection-mode',
+  'ping-all'
 ]);
 
 const searchModel = computed({
@@ -57,7 +58,8 @@ const searchModel = computed({
 </script>
 
 <template>
-  <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-4">
+  <div class="mb-4 bg-white/80 dark:bg-gray-900/60 border border-gray-100/80 dark:border-white/10 misub-radius-lg p-4">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
     <div class="flex items-center gap-3 flex-wrap">
       <h2 class="text-xl font-bold text-gray-900 dark:text-white">手动节点</h2>
       <span class="px-2.5 py-0.5 text-sm font-semibold text-gray-700 dark:text-gray-200 bg-gray-200 dark:bg-gray-700/50 rounded-full">{{ manualNodesCount }}</span>
@@ -87,12 +89,12 @@ const searchModel = computed({
     <div class="flex items-center gap-2 w-full sm:w-auto">
 
 
-      <div class="relative grow">
+      <div class="relative grow lg:min-w-[240px]">
         <input 
           type="text" 
           v-model="searchModel"
           placeholder="搜索节点..."
-          class="w-full pl-9 pr-3 py-1.5 text-sm bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 misub-radius-md shadow-xs focus:outline-hidden focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
+          class="w-full pl-9 pr-3 py-2 text-sm bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 misub-radius-md shadow-xs focus:outline-hidden focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
         />
         <svg class="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
       </div>
@@ -104,6 +106,7 @@ const searchModel = computed({
           <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z" clip-rule="evenodd" /></svg>
         </button>
       </div>
+      <button @click="emit('ping-all')" class="text-sm font-medium px-4 py-2 misub-radius-md bg-green-500/10 hover:bg-green-500/20 text-green-700 dark:text-green-400 transition-colors shrink-0">全部测速</button>
       <button @click="emit('add')" class="text-sm font-medium px-4 py-2 misub-radius-md bg-primary-600 hover:bg-primary-700 text-white transition-colors shadow-sm shadow-primary-500/20 shrink-0">新增</button>
       <MoreActionsMenu menu-width-class="w-36">
         <template #menu="{ close }">
@@ -132,7 +135,7 @@ const searchModel = computed({
   </div>
   
   <!-- Group Filter Chips (New Line) -->
-  <div class="hidden md:flex items-center gap-2 mb-4 overflow-x-auto no-scrollbar mask-gradient-r pb-1">
+  <div class="hidden md:flex items-center gap-2 mt-3 pt-3 border-t border-gray-100/80 dark:border-white/10 overflow-x-auto no-scrollbar mask-gradient-r pb-1">
     <button 
       @click="emit('set-group-filter', null)"
       class="px-3 py-1 text-xs font-medium misub-radius-md transition-all border shrink-0"
@@ -153,4 +156,6 @@ const searchModel = computed({
       {{ group }}
     </button>
   </div>
+  </div>
 </template>
+

@@ -4,8 +4,9 @@
  */
 
 import { StorageFactory, DataMigrator } from '../storage-adapter.js';
-import { createJsonResponse, createErrorResponse } from './utils.js';
-import { authMiddleware, handleLogin, handleLogout } from './auth-middleware.js';
+import { KV_KEY_SUBS } from './config.js';
+import { createJsonResponse, createErrorResponse, getAuthDebugInfo } from './utils.js';
+import { authMiddleware, handleLogin, handleLogout, getAuthSessionDiagnostic, getLoginPasswordDiagnostic } from './auth-middleware.js';
 import { handleDataRequest, handleMisubsSave, handleSettingsGet, handleSettingsSave, handlePublicProfilesRequest, handlePublicConfig, handleUpdatePassword } from './api-handler.js';
 import { handleCronTrigger } from './notifications.js';
 import {
@@ -37,10 +38,22 @@ import {
 } from './handlers/guestbook-handler.js';
 import { handleGithubReleaseRequest } from './handlers/github-proxy-handler.js'; // [NEW] Import handler
 import { handleParseSubscription } from './parse-subscription-handler.js';
+import {
+    handleVpsReport,
+    handleVpsNodesRequest,
+    handleVpsNodeDetailRequest,
+    handleVpsAlertsRequest,
+    handleVpsInstallScript,
+    handleVpsUninstallScript,
+    handleVpsNetworkTargetsRequest,
+    handleVpsNetworkCheck,
+    handleVpsConfig,
+    handleVpsPublicNodeDetailRequest,
+    handleVpsCleanup
+} from './handlers/vps-monitor-handler.js';
 
 // 常量定义
 const OLD_KV_KEY = 'misub_data_v1';
-const KV_KEY_SUBS = 'misub_subscriptions_v1';
 const KV_KEY_PROFILES = 'misub_profiles_v1'; // Ensure this is defined if used
 
 /**
@@ -92,8 +105,13 @@ export async function handleApiRequest(request, env) {
             return createJsonResponse({ error: 'Unauthorized' }, 401);
         }
         try {
-            const oldData = await env.MISUB_KV.get(OLD_KV_KEY, 'json');
-            const newDataExists = await env.MISUB_KV.get(KV_KEY_SUBS) !== null;
+            const kv = StorageFactory.resolveKV(env);
+            if (!kv) {
+                return createJsonResponse({ success: false, message: 'KV 未绑定' }, 400);
+            }
+            const oldData = await kv.get(OLD_KV_KEY).then(r => r ? JSON.parse(r) : null);
+            const newDataRaw = await kv.get(KV_KEY_SUBS);
+            const newDataExists = newDataRaw !== null;
 
             if (newDataExists) {
                 return createJsonResponse({ success: true, message: '无需迁移，数据已是最新结构。' }, 200);
@@ -102,10 +120,10 @@ export async function handleApiRequest(request, env) {
                 return createJsonResponse({ success: false, message: '未找到需要迁移的旧数据。' }, 404);
             }
 
-            await env.MISUB_KV.put(KV_KEY_SUBS, JSON.stringify(oldData));
-            await env.MISUB_KV.put(KV_KEY_PROFILES, JSON.stringify([]));
-            await env.MISUB_KV.put(OLD_KV_KEY + '_migrated_on_' + new Date().toISOString(), JSON.stringify(oldData));
-            await env.MISUB_KV.delete(OLD_KV_KEY);
+            await kv.put(KV_KEY_SUBS, JSON.stringify(oldData));
+            await kv.put(KV_KEY_PROFILES, JSON.stringify([]));
+            await kv.put(OLD_KV_KEY + '_migrated_on_' + new Date().toISOString(), JSON.stringify(oldData));
+            await kv.delete(OLD_KV_KEY);
 
             return createJsonResponse({ success: true, message: '数据迁移成功！' }, 200);
         } catch (e) {
@@ -118,7 +136,7 @@ export async function handleApiRequest(request, env) {
         return await handleLogin(request, env);
     }
 
-    if (path === '/public_config') {
+    if (path === '/public_config' || path === '/config') {
         return await handlePublicConfig(env);
     }
 
@@ -152,6 +170,32 @@ export async function handleApiRequest(request, env) {
         return await handleErrorReportRequest(request, env);
     }
 
+    // VPS monitor public report endpoint
+    if (path === '/vps/report') {
+        return await handleVpsReport(request, env);
+    }
+
+    // VPS monitor install/uninstall script endpoint (public)
+    if (path === '/vps/install') {
+        return await handleVpsInstallScript(request, env);
+    }
+    if (path === '/vps/uninstall') {
+        return await handleVpsUninstallScript(request, env);
+    }
+
+    if (path === '/vps/config') {
+        return await handleVpsConfig(request, env);
+    }
+
+    if (path === '/vps/public') {
+        const { handleVpsPublicSnapshotRequest } = await import('./handlers/vps-monitor-handler.js');
+        return await handleVpsPublicSnapshotRequest(request, env);
+    }
+    
+    if (path.startsWith('/vps/public/nodes/')) {
+        return await handleVpsPublicNodeDetailRequest(request, env);
+    }
+
     // Public GET access for clients
     if (path.startsWith('/clients') && request.method === 'GET') {
         return await handleClientRequest(request, env);
@@ -159,9 +203,6 @@ export async function handleApiRequest(request, env) {
 
     // Special handling for /data to return 200 OK for unauthenticated requests
     if (path === '/data') {
-        if (!env?.MISUB_KV) {
-            return createErrorResponse('KV 绑定 MISUB_KV 缺失', 500);
-        }
         if (!await authMiddleware(request, env)) {
             return createJsonResponse({
                 authenticated: false,
@@ -183,6 +224,27 @@ export async function handleApiRequest(request, env) {
         return await handleLogout(request);
     }
 
+    // 认证调试端点（公开，不返回敏感值）
+    if (path === '/auth_debug') {
+        const debugInfo = await getAuthDebugInfo(env);
+        const authDiagnostic = await getAuthSessionDiagnostic(request, env);
+
+        return createJsonResponse({
+            success: true,
+            auth: authDiagnostic,
+            runtime: debugInfo
+        });
+    }
+
+    // 登录密码调试端点（公开，不返回敏感值）
+    if (path === '/auth_check') {
+        if (request.method !== 'POST') {
+            return createJsonResponse({ error: 'Method Not Allowed' }, 405);
+        }
+        const diagnostic = await getLoginPasswordDiagnostic(request, env);
+        return createJsonResponse(diagnostic, diagnostic.success ? 200 : 400);
+    }
+
     if (!await authMiddleware(request, env)) {
         return createJsonResponse({ error: 'Unauthorized' }, 401);
     }
@@ -190,6 +252,22 @@ export async function handleApiRequest(request, env) {
     // Auth-only route for client management (POST, DELETE, etc.)
     if (path.startsWith('/clients')) {
         return await handleClientRequest(request, env);
+    }
+
+    if (path === '/vps/nodes') {
+        return await handleVpsNodesRequest(request, env);
+    }
+
+    if (path.startsWith('/vps/nodes/')) {
+        return await handleVpsNodeDetailRequest(request, env);
+    }
+
+    if (path === '/vps/network_targets') {
+        return await handleVpsNetworkTargetsRequest(request, env);
+    }
+
+    if (path === '/vps/network_check') {
+        return await handleVpsNetworkCheck(request, env);
     }
 
     if (path === '/test_notification') {
@@ -206,7 +284,77 @@ export async function handleApiRequest(request, env) {
         return await handleTestSubconverterRequest(request, env);
     }
 
+    // KV 诊断端点：测试 KV 读写是否正常（需登录）
+    if (path === '/kv_test') {
+        try {
+            const kv = StorageFactory.resolveKV(env);
+            if (!kv) {
+                // 列出 env 中所有 key 及其类型，帮助诊断绑定情况
+                const envKeys = env ? Object.keys(env).map(k => {
+                    const v = env[k];
+                    const t = typeof v;
+                    const isKVLike = v && t === 'object' && typeof v.get === 'function';
+                    return `${k}(${t}${isKVLike ? ',KV-like' : ''})`;
+                }) : [];
+                return createJsonResponse({ success: false, error: 'KV 未绑定', envKeys });
+            }
+            const testKey = '__kv_test_' + Date.now();
+            const testValue = 'test_' + Math.random().toString(36).slice(2);
 
+            // 写入
+            let putError = null;
+            try {
+                await kv.put(testKey, testValue);
+            } catch (e) {
+                putError = e.message;
+            }
+
+            // 读回
+            let readBack = null;
+            let getError = null;
+            try {
+                readBack = await kv.get(testKey);
+            } catch (e) {
+                getError = e.message;
+            }
+
+            // 清理
+            try { await kv.delete(testKey); } catch (_) {}
+
+            // 读取实际数据键
+            let subsRaw = null;
+            let subsError = null;
+            try {
+                subsRaw = await kv.get('misub_subscriptions_v1');
+            } catch (e) {
+                subsError = e.message;
+            }
+
+            let settingsRaw = null;
+            try {
+                settingsRaw = await kv.get('worker_settings_v1');
+            } catch (_) {}
+
+            return createJsonResponse({
+                success: true,
+                kvBound: true,
+                writeTest: {
+                    wrote: testValue,
+                    readBack,
+                    match: readBack === testValue,
+                    putError,
+                    getError
+                },
+                actualData: {
+                    subscriptions: subsRaw ? `存在，长度=${subsRaw.length}` : 'null（空）',
+                    settings: settingsRaw ? `存在，长度=${settingsRaw.length}` : 'null（空）',
+                    subsError
+                }
+            });
+        } catch (e) {
+            return createJsonResponse({ success: false, error: e.message });
+        }
+    }
 
     switch (path) {
         case '/misubs':
@@ -263,6 +411,12 @@ export async function handleApiRequest(request, env) {
             }
             return createErrorResponse('Method Not Allowed', 405);
 
+        case '/vps/alerts':
+            return await handleVpsAlertsRequest(request, env);
+
+        case '/vps/cleanup':
+            return await handleVpsCleanup(request, env);
+
         case '/settings':
             if (request.method === 'GET') {
                 return await handleSettingsGet(env);
@@ -283,6 +437,18 @@ export async function handleApiRequest(request, env) {
                 return await handleGuestbookManageAction(request, env);
             }
             return createErrorResponse('Method Not Allowed', 405);
+
+        case '/cron/status':
+            if (!await authMiddleware(request, env)) {
+                return createJsonResponse({ error: 'Unauthorized' }, 401);
+            }
+            return await handleCronStatusRequest(env);
+
+        case '/cron/trigger':
+            if (!await authMiddleware(request, env)) {
+                return createJsonResponse({ error: 'Unauthorized' }, 401);
+            }
+            return await handleCronTriggerRequest(env);
 
         default:
             return createErrorResponse('API route not found', 404);
@@ -333,12 +499,7 @@ async function handleExternalFetchRequest(request, env) {
             },
             redirect: "follow",
             signal: controller.signal
-        }), {
-            cf: {
-                insecureSkipVerify: true,
-                timeout: timeout / 1000 // Cloudflare timeout in seconds
-            }
-        });
+        }));
 
         clearTimeout(timeoutId);
 
@@ -428,4 +589,237 @@ function encodeArrayBufferToBase64(buffer) {
     }
 
     return btoa(binary);
+}
+
+/**
+ * 处理 Cron 状态查询请求
+ * @param {Object} env - Cloudflare环境对象
+ * @returns {Promise<Response>} HTTP响应
+ */
+async function handleCronStatusRequest(env) {
+    try {
+        // 检查是否启用Cron功能
+        const enableCron = env.ENABLE_CRON !== 'false';
+
+        // 获取Cron配置
+        const cronType = env.CRON_TYPE || 'hourly-subscription-sync';
+        const maxSyncCount = parseInt(env.CRON_MAX_SYNC_COUNT) || 50;
+        const syncTimeout = parseInt(env.CRON_SYNC_TIMEOUT) || 30000;
+        const enableParallel = env.CRON_ENABLE_PARALLEL !== 'false';
+
+        // 获取最近的Cron执行状态（如果有的话）
+        let lastExecution = null;
+        try {
+            const kv = StorageFactory.resolveKV(env);
+            if (kv) {
+                const statusData = await kv.get('cron_last_execution');
+                if (statusData) {
+                    lastExecution = JSON.parse(statusData);
+                }
+            }
+        } catch (error) {
+            console.warn('[Cron Status] Failed to fetch last execution:', error);
+        }
+
+        const statusData = {
+            enabled: enableCron,
+            config: {
+                type: cronType,
+                maxSyncCount,
+                syncTimeout,
+                enableParallel
+            },
+            totalSubscriptions: lastExecution?.result?.totalSubscriptions || 0,
+            successfulSyncs: lastExecution?.result?.successfulSyncs || 0,
+            failedSyncs: lastExecution?.result?.failedSyncs || 0,
+            lastSync: lastExecution?.timestamp || null,
+            details: lastExecution?.result?.details || [],
+            lastExecution,
+            timestamp: new Date().toISOString()
+        };
+
+        return createJsonResponse(statusData);
+
+    } catch (error) {
+        console.error('[Cron Status Error]', error);
+        return createErrorResponse(error, 500);
+    }
+}
+
+/**
+ * 处理 Cron 手动触发请求
+ * @param {Object} env - Cloudflare环境对象
+ * @returns {Promise<Response>} HTTP响应
+ */
+async function handleCronTriggerRequest(env) {
+    try {
+        // 检查是否启用Cron功能
+        const enableCron = env.ENABLE_CRON !== 'false';
+        if (!enableCron) {
+            return createJsonResponse({
+                success: false,
+                error: 'Cron functionality is disabled'
+            }, 400);
+        }
+
+        // 获取Cron配置
+        const cronType = env.CRON_TYPE || 'hourly-subscription-sync';
+        const maxSyncCount = parseInt(env.CRON_MAX_SYNC_COUNT) || 50;
+        const syncTimeout = parseInt(env.CRON_SYNC_TIMEOUT) || 30000;
+        const enableParallel = env.CRON_ENABLE_PARALLEL !== 'false';
+
+        // 调用 _schedule.js 中的同步逻辑
+        const scheduleModule = await import('../_schedule.js');
+        const result = await scheduleModule.performSubscriptionSync(env, {
+            maxSyncCount,
+            syncTimeout,
+            enableParallel
+        });
+
+        // 保存执行状态
+        try {
+            const kv = StorageFactory.resolveKV(env);
+            if (kv) {
+                const executionStatus = {
+                    type: 'manual_trigger',
+                    cronType,
+                    timestamp: new Date().toISOString(),
+                    result: {
+                        totalSubscriptions: result.totalSubscriptions,
+                        successfulSyncs: result.successfulSyncs,
+                        failedSyncs: result.failedSyncs
+                    }
+                };
+                await kv.put('cron_last_execution', JSON.stringify(executionStatus), {
+                    expirationTtl: 86400 // 24小时后过期
+                });
+            }
+        } catch (error) {
+            console.warn('[Cron Trigger] Failed to save execution status:', error);
+        }
+
+        return createJsonResponse({
+            success: true,
+            message: 'Cron triggered successfully',
+            result,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('[Cron Trigger Error]', error);
+        return createErrorResponse(error, 500);
+    }
+}
+
+/**
+ * 执行订阅同步（复用_cron.js的逻辑）
+ * @param {Object} env - Cloudflare环境对象
+ * @param {Object} config - 同步配置
+ * @returns {Promise<Object>} 同步结果
+ */
+async function performSubscriptionSync(env, config) {
+    const { maxSyncCount = 50, syncTimeout = 30000, enableParallel = true } = config;
+
+    const results = {
+        timestamp: new Date().toISOString(),
+        totalSubscriptions: 0,
+        successfulSyncs: 0,
+        failedSyncs: 0,
+        config: { maxSyncCount, syncTimeout, enableParallel }
+    };
+
+    try {
+        // 获取订阅列表
+        const subscriptions = await getAllSubscriptions(env);
+        results.totalSubscriptions = subscriptions.length;
+
+        // 限制同步数量
+        const subscriptionsToSync = subscriptions.slice(0, maxSyncCount);
+
+        if (enableParallel) {
+            // 并行同步
+            const syncPromises = subscriptionsToSync.map(async (sub) => {
+                try {
+                    await performSingleSubscriptionSync(sub, env, syncTimeout);
+                    return { success: true };
+                } catch (error) {
+                    console.error(`[Cron] Failed to sync ${sub.name}:`, error);
+                    return { success: false, error: error.message };
+                }
+            });
+
+            const syncResults = await Promise.allSettled(syncPromises);
+            syncResults.forEach(result => {
+                if (result.status === 'fulfilled' && result.value.success) {
+                    results.successfulSyncs++;
+                } else {
+                    results.failedSyncs++;
+                }
+            });
+        } else {
+            // 串行同步
+            for (const sub of subscriptionsToSync) {
+                try {
+                    await performSingleSubscriptionSync(sub, env, syncTimeout);
+                    results.successfulSyncs++;
+                } catch (error) {
+                    console.error(`[Cron] Failed to sync ${sub.name}:`, error);
+                    results.failedSyncs++;
+                }
+            }
+        }
+
+    } catch (error) {
+        console.error('[Cron] Subscription sync error:', error);
+        results.error = error.message;
+    }
+
+    return results;
+}
+
+/**
+ * 获取所有订阅
+ * @param {Object} env - Cloudflare环境对象
+ * @returns {Promise<Array>} 订阅列表
+ */
+async function getAllSubscriptions(env) {
+    try {
+        const storageAdapter = StorageFactory.createAdapter(env, await StorageFactory.getStorageType(env));
+        const subscriptions = await storageAdapter.get(KV_KEY_SUBS) || [];
+        return Array.isArray(subscriptions) ? subscriptions : [];
+    } catch (error) {
+        console.error('[Cron] Failed to fetch subscriptions:', error);
+        return [];
+    }
+}
+
+/**
+ * 执行单个订阅同步
+ * @param {Object} subscription - 订阅对象
+ * @param {Object} env - 环境变量
+ * @param {number} timeout - 超时时间（毫秒）
+ */
+async function performSingleSubscriptionSync(subscription, env, timeout) {
+    // 创建带超时的 AbortController
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    try {
+        // 这里应该调用实际的订阅同步逻辑
+        // 暂时使用模拟逻辑
+        console.log(`[Single Sync] Processing ${subscription.name || subscription.url} with ${timeout}ms timeout`);
+
+        // 模拟网络请求
+        await new Promise((resolve, reject) => {
+            controller.signal.addEventListener('abort', () => reject(new Error('Timeout')));
+            setTimeout(resolve, Math.random() * 2000); // 模拟1-2秒的处理时间
+        });
+
+        clearTimeout(timeoutId);
+        return { success: true };
+
+    } catch (error) {
+        clearTimeout(timeoutId);
+        throw error;
+    }
 }

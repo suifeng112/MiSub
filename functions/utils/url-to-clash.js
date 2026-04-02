@@ -115,6 +115,19 @@ function parseVlessUrl(url) {
                 proxy['ws-opts'] = wsOpts;
             }
         }
+        
+        // xHTTP 配置 (Loon 3.0+ / Xray 1.8.7+)
+        if (network === 'xhttp') {
+            const xhttpOpts = {};
+            const path = params.get('xhttp-path') || params.get('path');
+            const host = params.get('xhttp-host') || params.get('host');
+            if (path) xhttpOpts.path = path;
+            if (host) xhttpOpts.host = host;
+            if (params.get('mode')) xhttpOpts.mode = params.get('mode');
+            if (Object.keys(xhttpOpts).length > 0) {
+                proxy['xhttp-opts'] = xhttpOpts;
+            }
+        }
 
         // gRPC 配置
         if (network === 'grpc') {
@@ -684,6 +697,109 @@ return null;
 }
 
 /**
+* 将 Snell URL 转换为 Clash 代理对象
+* @param {string} url - Snell URL
+* @returns {Object|null} Clash 代理对象
+*/
+function parseSnellUrl(url) {
+    try {
+        const body = url.substring('snell://'.length);
+        let psk = '';
+        let serverPart = '';
+        const atIndex = body.indexOf('@');
+        if (atIndex !== -1) {
+            psk = body.substring(0, atIndex);
+            try { psk = decodeURIComponent(psk); } catch { }
+            serverPart = body.substring(atIndex + 1);
+        } else {
+            serverPart = body;
+        }
+
+        const queryIndex = serverPart.indexOf('?');
+        const hashIndex = serverPart.indexOf('#');
+        let hostPortStr = serverPart;
+        if (queryIndex !== -1) {
+            hostPortStr = serverPart.substring(0, queryIndex);
+        } else if (hashIndex !== -1) {
+            hostPortStr = serverPart.substring(0, hashIndex);
+        }
+
+        const { server, port } = parseHostPort(hostPortStr);
+        const params = parseQueryParams(url);
+        const name = extractName(url);
+
+        if (!psk) psk = params.get('psk') || params.get('password') || '';
+
+        const proxy = { name: name || `Snell-${server}`, type: 'snell', server, port, psk };
+        const version = params.get('version');
+        if (version) proxy.version = parseInt(version);
+        const reuse = params.get('reuse');
+        if (reuse !== null) proxy.reuse = reuse === 'true';
+        const tfo = params.get('tfo');
+        if (tfo !== null) proxy.tfo = tfo === 'true';
+        const obfs = params.get('obfs');
+        const obfsHost = params.get('obfs-host');
+        if (obfs || obfsHost) {
+            proxy['obfs-opts'] = {};
+            if (obfs) proxy['obfs-opts'].mode = obfs;
+            if (obfsHost) proxy['obfs-opts'].host = obfsHost;
+        }
+        if (params.get('udp-relay') === 'true') proxy.udp = true;
+        return proxy;
+    } catch (e) {
+        console.error('解析 Snell URL 失败:', e);
+        return null;
+    }
+}
+
+/**
+ * 将 AnyTLS URL 转换为 Clash 代理对象
+ * @param {string} url - AnyTLS URL
+ * @returns {Object|null} Clash 代理对象
+ */
+function parseAnytlsUrl(url) {
+    try {
+        const body = url.substring(9);
+        let password = '';
+        let serverPart = '';
+        const atIndex = body.indexOf('@');
+        if (atIndex !== -1) {
+            password = body.substring(0, atIndex);
+            try { password = decodeURIComponent(password); } catch { }
+            serverPart = body.substring(atIndex + 1);
+        } else {
+            serverPart = body;
+        }
+
+        const queryIndex = serverPart.indexOf('?');
+        const hashIndex = serverPart.indexOf('#');
+        let hostPortStr = serverPart;
+        if (queryIndex !== -1) {
+            hostPortStr = serverPart.substring(0, queryIndex);
+        } else if (hashIndex !== -1) {
+            hostPortStr = serverPart.substring(0, hashIndex);
+        }
+
+        const { server, port } = parseHostPort(hostPortStr);
+        const params = parseQueryParams(url);
+        const name = extractName(url);
+
+        const proxy = { name: name || `AnyTLS-${server}`, type: 'anytls', server, port, password };
+        
+        if (params.get('sni')) proxy.sni = params.get('sni');
+        if (params.get('alpn')) proxy.alpn = params.get('alpn').split(',');
+        if (params.get('insecure') === '1') proxy['skip-cert-verify'] = true;
+
+        proxy.udp = true;
+        return proxy;
+    } catch (e) {
+        console.error('解析 AnyTLS URL 失败:', e);
+        return null;
+    }
+}
+
+
+/**
 * 将节点 URL 转换为 Clash 代理对象
 * @param {string} url - 节点 URL
 * @returns {Object|null} Clash 代理对象
@@ -705,8 +821,12 @@ return parseSsUrl(url);
 return parseHysteria2Url(url);
 } else if (lowerUrl.startsWith('tuic://')) {
 return parseTuicUrl(url);
+} else if (lowerUrl.startsWith('snell://')) {
+return parseSnellUrl(url);
 } else if (lowerUrl.startsWith('wireguard://')) {
 return parseWireguardUrl(url);
+} else if (lowerUrl.startsWith('anytls://')) {
+return parseAnytlsUrl(url);
 }
 
 // 不支持的协议

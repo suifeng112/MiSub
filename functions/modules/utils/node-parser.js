@@ -148,7 +148,7 @@ if (proxy.sni) params.push(`sni=${encodeURIComponent(proxy.sni)}`);
             return `vless://${uuid}@${server}:${port}?${params.join('&')}#${encodeURIComponent(name)}`;
         }
 
-        if (type === 'hysteria2') {
+        if (type === 'hysteria2' || type === 'hy2' || type === 'hy') {
             const params = [];
             const password = proxy.password || proxy.auth || '';
 
@@ -161,6 +161,20 @@ if (proxy.sni) params.push(`sni=${encodeURIComponent(proxy.sni)}`);
 
             const query = params.length > 0 ? `?${params.join('&')}` : '';
             return `hysteria2://${encodeURIComponent(password)}@${server}:${port}${query}#${encodeURIComponent(name)}`;
+        }
+
+        if (type === 'hysteria') {
+            const params = [];
+            const password = proxy.password || proxy.auth || '';
+
+            if (proxy.protocol === 'udp') params.push('protocol=udp');
+            if (proxy.sni) params.push(`sni=${encodeURIComponent(proxy.sni)}`);
+            if (proxy.skipCertVerify || proxy['skip-cert-verify']) params.push('insecure=1');
+            if (proxy.up || proxy['up-mbps']) params.push(`up=${proxy.up || proxy['up-mbps']}`);
+            if (proxy.down || proxy['down-mbps']) params.push(`down=${proxy.down || proxy['down-mbps']}`);
+
+            const query = params.length > 0 ? `?${params.join('&')}` : '';
+            return `hysteria://${encodeURIComponent(password)}@${server}:${port}${query}#${encodeURIComponent(name)}`;
         }
 
         if (type === 'socks5') {
@@ -187,14 +201,15 @@ if (proxy.sni) params.push(`sni=${encodeURIComponent(proxy.sni)}`);
             if (proxy.reuse !== undefined) params.push(`reuse=${proxy.reuse}`);
             if (proxy.tfo !== undefined) params.push(`tfo=${proxy.tfo}`);
 
-            const obfsOpts = proxy['obfs-opts'];
+            const obfsOpts = proxy['obfs-opts'] || proxy.pluginOpts;
             if (obfsOpts) {
                 if (obfsOpts.mode) params.push(`obfs=${obfsOpts.mode}`);
                 if (obfsOpts.host) params.push(`obfs-host=${encodeURIComponent(obfsOpts.host)}`);
             }
 
+            const psk = proxy.psk || proxy.password || '';
             const query = params.length > 0 ? `?${params.join('&')}` : '';
-            return `snell://${encodeURIComponent(proxy.psk)}@${server}:${port}${query}#${encodeURIComponent(name)}`;
+            return `snell://${encodeURIComponent(psk)}@${server}:${port}${query}#${encodeURIComponent(name)}`;
         }
 
         if (type === 'naive' || proxy.protocol === 'naive') {
@@ -291,7 +306,7 @@ function parseSurgeOrQxLine(line) {
     if (!line || line.startsWith('#') || line.startsWith(';')) return null;
 
     // Surge 格式: "name = protocol, server, port, key=value, ..."
-    let match = line.match(/^([^=]+)=(shadowsocks|ss|ssr|vmess|vless|trojan|hysteria2?|hy2|hysteria|tuic|snell|anytls|socks5|http|https),\s*([^,]+),\s*(\d+)(.*)$/i);
+    let match = line.match(/^([^=]+?)\s*=\s*(shadowsocks|ss|ssr|vmess|vless|trojan|hysteria2?|hy2|hysteria|tuic|snell|anytls|socks5|http|https)\s*,\s*([^,]+?)\s*,\s*(\d+)(.*)$/i);
     if (match) {
         const proxy = {
             name: match[1].trim(),
@@ -302,6 +317,7 @@ function parseSurgeOrQxLine(line) {
         const extraParams = match[5];
         if (extraParams) {
             const parts = extraParams.split(',').map(p => p.trim());
+            let positionalIndex = 0;
             for (const p of parts) {
                 if (!p) continue;
                 const kv = p.split('=');
@@ -310,17 +326,39 @@ function parseSurgeOrQxLine(line) {
                     let v = kv.slice(1).join('=').trim();
                     if (v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1);
                     
-                    if (k === 'password' || k === 'auth' || k === 'psk') {
+                    if (k === 'password' || k === 'auth' || k === 'psk' || k === 'username' || k === 'uuid') {
                         if (proxy.type === 'vless' || proxy.type === 'vmess') proxy.uuid = v;
+                        else if (proxy.type === 'snell') proxy.psk = v;
                         else proxy.password = v;
+                    }
+                    if (k === 'token') {
+                        if (proxy.type === 'tuic') proxy.token = proxy.password = v;
                     }
                     if (k === 'sni') proxy.sni = v;
                     if (k === 'skip-cert-verify' && v === 'true') proxy.skipCertVerify = true;
                     if (k === 'encrypt-method' || k === 'cipher' || k === 'method') proxy.cipher = v;
                     if (k === 'obfs') { proxy.pluginOpts = proxy.pluginOpts || {}; proxy.pluginOpts.mode = v; }
                     if (k === 'obfs-host') { proxy.pluginOpts = proxy.pluginOpts || {}; proxy.pluginOpts.host = v; }
+                    if (k === 'version') proxy.version = parseInt(v);
+                    if (k === 'reuse' && v === 'true') proxy.reuse = true;
                     if (k === 'tfo' && v === 'true') proxy.tfo = true;
                     if (k === 'udp-relay' && v === 'true') proxy.udp = true;
+                } else {
+                    // 处理位置参数 (针对 Surge)
+                    const val = p.trim();
+                    if (!val) continue;
+
+                    if (proxy.type === 'shadowsocks' || proxy.type === 'ss') {
+                        if (positionalIndex === 0) proxy.cipher = val;
+                        else if (positionalIndex === 1) proxy.password = val;
+                    } else if (proxy.type === 'vmess' || proxy.type === 'vless') {
+                        if (positionalIndex === 0) proxy.uuid = val;
+                    } else if (proxy.type === 'trojan' || proxy.type.startsWith('hysteria') || proxy.type === 'hy2' || proxy.type === 'tuic') {
+                        if (positionalIndex === 0) proxy.password = val;
+                    } else if (proxy.type === 'snell') {
+                        if (positionalIndex === 0) proxy.psk = val;
+                    }
+                    positionalIndex++;
                 }
             }
         }
@@ -328,7 +366,7 @@ function parseSurgeOrQxLine(line) {
     }
 
     // QX 格式: "protocol=server:port, key=value, ..., tag=name"
-    match = line.match(/^(shadowsocks|ss|ssr|vmess|vless|trojan|hysteria2?|hy2|hysteria|tuic|snell|anytls|socks5|http|https)=([^,:]+):(\d+)(.*)$/i);
+    match = line.match(/^(shadowsocks|ss|ssr|vmess|vless|trojan|hysteria2?|hy2|hysteria|tuic|snell|anytls|socks5|http|https)\s*=\s*([^,:]+?)\s*:\s*(\d+)(.*)$/i);
     if (match) {
         const proxy = {
             name: 'Untitled',
@@ -348,13 +386,19 @@ function parseSurgeOrQxLine(line) {
                     if (v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1);
                     
                     if (k === 'tag') proxy.name = v;
-                    if (k === 'password' || k === 'auth' || k === 'psk') {
+                    if (k === 'password' || k === 'auth' || k === 'psk' || k === 'username' || k === 'uuid') {
                         if (proxy.type === 'vless' || proxy.type === 'vmess') proxy.uuid = v;
                         else proxy.password = v;
                     }
+                    if (k === 'token') {
+                        if (proxy.type === 'tuic') proxy.token = proxy.password = v;
+                    }
                     if (k === 'sni' || k === 'tls-host' || k === 'obfs-host') proxy.sni = v;
                     if (k === 'tls-verification' && v === 'false') proxy.skipCertVerify = true;
-                    if (k === 'method' || k === 'cipher') proxy.cipher = v === 'none' ? undefined : v;
+                    if (k === 'method' || k === 'cipher') {
+                        // `none` 是 Shadowsocks 的合法配置，不能在解析阶段被抹掉
+                        proxy.cipher = v;
+                    }
                     if (k === 'obfs') {
                         if (v === 'over-tls') proxy.tls = true;
                         else { proxy.pluginOpts = proxy.pluginOpts || {}; proxy.pluginOpts.mode = v; }
@@ -368,6 +412,10 @@ function parseSurgeOrQxLine(line) {
                         proxy['reality-opts'] = proxy['reality-opts'] || {};
                         proxy['reality-opts']['short-id'] = v;
                     }
+                    if (k === 'version') proxy.version = parseInt(v);
+                    if (k === 'reuse' && v === 'true') proxy.reuse = true;
+                    if (k === 'tfo' && v === 'true') proxy.tfo = true;
+                    if (k === 'udp-relay' && v === 'true') proxy.udp = true;
                 }
             }
         }
@@ -457,10 +505,11 @@ export function extractValidNodes(text) {
 }
 
 /**
- * 支持的 Shadowsocks 加密算法 (AEAD)
- * 现代客户端 (如 Sing-box) 已弃用非 AEAD 算法 (如 aes-256-cfb, rc4-md5)
+ * 支持的 Shadowsocks 加密算法
+ * 包含现代 AEAD / SS2022，同时保留 `none` 以兼容合法的无加密节点。
  */
 const SUPPORTED_SS_CIPHERS = [
+    'none',
     'aes-128-gcm', 'aes-256-gcm',
     'chacha20-poly1305', 'chacha20-ietf-poly1305',
     'xchacha20-ietf-poly1305',
@@ -479,12 +528,12 @@ function isValidUUID(uuid) {
 /**
  * 解析节点列表 (用于预览和计数)
  */
-export function parseNodeList(content) {
+export function parseNodeList(content, options = {}) {
     const validNodes = extractValidNodes(content);
 
     return validNodes.map(nodeUrl => {
         // 1. 修复编码 (如 Hysteria2 密码)
-        let fixedUrl = fixNodeUrlEncoding(nodeUrl);
+        let fixedUrl = fixNodeUrlEncoding(nodeUrl, options);
 
         // 2. [新增] 验证和修复 SS 2022 节点 & 过滤传统 SS 算法
         let ss2022Warning = null;
@@ -639,10 +688,8 @@ export function parseNodeList(content) {
             }
 
             if (id) {
-                // 如果是 auto: 开头，去掉 auto: 再验证 UUID?
-                // 不，用户不想看这些节点，直接验证完整 ID 是否为 UUID
-                // 包含 auto: 的 ID 会导致 isValidUUID 返回 false
-                if (!isValidUUID(id)) {
+                // 放宽校验：仅过滤掉明显的 auto: 占位符，不过滤非标准 UUID (部分机场使用短 ID)
+                if (String(id).startsWith('auto:')) {
                     isValidNode = false;
                 }
             }
@@ -659,7 +706,8 @@ export function parseNodeList(content) {
                     }
                     const jsonStr = atob(safeBody);
                     const config = JSON.parse(jsonStr);
-                    if (config && config.id && !isValidUUID(config.id)) {
+                    // 放宽校验：仅过滤掉明显的 auto: 占位符，不过滤非标准 UUID (部分机场使用短 ID)
+                    if (config && config.id && String(config.id).startsWith('auto:')) {
                         isValidNode = false;
                     }
                 } catch (e) {

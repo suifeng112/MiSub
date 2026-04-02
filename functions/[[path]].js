@@ -23,11 +23,13 @@ import { handleApiRequest } from './modules/api-router.js';
 import { createJsonResponse } from './modules/utils.js';
 import { corsMiddleware, securityHeadersMiddleware } from './middleware/cors.js';
 import { handleDisguiseRequest } from './modules/handlers/disguise-handler.js';
+import { createDisguiseResponse } from './modules/disguise-page.js';
 
 // 静态导入核心依赖以优化冷加载
 import { StorageFactory, SettingsCache } from './storage-adapter.js';
 import { KV_KEY_SETTINGS } from './modules/config.js';
 import { handleCronTrigger } from './modules/notifications.js';
+import { handleVpsCleanup } from './modules/handlers/vps-monitor-handler.js';
 import { authMiddleware } from './modules/auth-middleware.js';
 
 function parseCorsOrigins(env, requestUrl) {
@@ -51,6 +53,10 @@ function applyNoStoreToHtmlResponse(response) {
         return response;
     }
     const headers = new Headers(response.headers);
+    headers.delete('Content-Encoding');
+    headers.delete('content-encoding');
+    headers.delete('Content-Length');
+    headers.delete('content-length');
     headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     headers.set('Pragma', 'no-cache');
     headers.set('Expires', '0');
@@ -59,6 +65,77 @@ function applyNoStoreToHtmlResponse(response) {
         statusText: response.statusText,
         headers
     });
+}
+
+const INTERNAL_SPA_FETCH_HEADER = 'x-misub-internal-spa-fetch';
+const INTERNAL_ORIGIN_ASSET_FETCH_HEADER = 'x-misub-origin-asset-fetch';
+
+function normalizeLoginPath(customLoginPath) {
+    if (typeof customLoginPath !== 'string') return '/login';
+    const normalized = customLoginPath.trim().replace(/^\/+/g, '');
+    return normalized ? `/${normalized}` : '/login';
+}
+
+async function fetchHostedAssetViaOrigin(request, assetPath) {
+    const assetUrl = new URL(assetPath, request.url);
+    const headers = new Headers(request.headers);
+    headers.delete(INTERNAL_SPA_FETCH_HEADER);
+    headers.set(INTERNAL_ORIGIN_ASSET_FETCH_HEADER, '1');
+
+    return fetch(new Request(assetUrl.toString(), {
+        method: ['GET', 'HEAD'].includes(request.method) ? request.method : 'GET',
+        headers
+    }));
+}
+
+async function fetchStaticAsset(request, env, next) {
+    if (typeof next === 'function') {
+        return next();
+    }
+
+    if (typeof env?.ASSETS?.fetch === 'function') {
+        return env.ASSETS.fetch(request);
+    }
+
+    if (request.headers.get(INTERNAL_ORIGIN_ASSET_FETCH_HEADER) === '1') {
+        return new Response('Not Found', { status: 404 });
+    }
+
+    const url = new URL(request.url);
+
+    if (url.pathname === '/') {
+        return fetchHostedAssetViaOrigin(request, '/index.html');
+    }
+
+    if (url.pathname === '/index.html' || /\.\w+$/.test(url.pathname)) {
+        return fetchHostedAssetViaOrigin(request, `${url.pathname}${url.search}`);
+    }
+
+    return new Response('Not Found', { status: 404 });
+}
+
+async function fetchSpaEntry(request, env, next) {
+    const indexUrl = new URL('/', request.url);
+
+    if (typeof env?.ASSETS?.fetch === 'function') {
+        return env.ASSETS.fetch(new Request(indexUrl, request));
+    }
+
+    if (typeof next === 'function') {
+        const headers = new Headers(request.headers);
+        headers.set(INTERNAL_SPA_FETCH_HEADER, '1');
+
+        if (new URL(request.url).pathname === '/') {
+            return applyNoStoreToHtmlResponse(await next());
+        }
+
+        return fetch(new Request(indexUrl.toString(), {
+            method: 'GET',
+            headers
+        }));
+    }
+
+    return fetchHostedAssetViaOrigin(request, '/index.html');
 }
 
 /**
@@ -72,6 +149,10 @@ export async function onRequest(context) {
 
     try {
         const handleRequest = async () => {
+            if (request.headers.get(INTERNAL_SPA_FETCH_HEADER) === '1') {
+                return applyNoStoreToHtmlResponse(await fetchStaticAsset(request, env, next));
+            }
+
             // 路由分发
             if (url.pathname.startsWith('/api/')) {
                 // API 路由
@@ -105,20 +186,38 @@ export async function onRequest(context) {
                 }
 
                 return await handleCronTrigger(env);
+            } else if (url.pathname === '/cron/vps-cleanup') {
+                const storageAdapter = StorageFactory.createAdapter(env, await StorageFactory.getStorageType(env));
+                const settings = await storageAdapter.get(KV_KEY_SETTINGS) || {};
+                const expectedSecret = settings.cronSecret;
+                if (!expectedSecret) {
+                    return createJsonResponse({
+                        error: 'Cron Secret 未配置',
+                        hint: '请在设置页面的「自动任务配置」中设置 Cron Secret'
+                    }, 500);
+                }
+                const cronAuthHeader = request.headers.get('Authorization');
+                const cronSecretParam = url.searchParams.get('secret');
+                const isAuthorized =
+                    cronAuthHeader === `Bearer ${expectedSecret}` ||
+                    cronSecretParam === expectedSecret;
+                if (!isAuthorized) {
+                    return createJsonResponse({ error: 'Unauthorized' }, 401);
+                }
+                return await handleVpsCleanup(request, env);
             } else {
                 const isLocalhost = ['localhost', '127.0.0.1'].includes(url.hostname);
 
                 // 本地 wrangler pages dev 调试兜底：优先返回静态资源，避免函数逻辑影响 SPA 首屏
                 if (isLocalhost) {
-                    let localResponse = await next();
+                    let localResponse = await fetchStaticAsset(request, env, next);
                     const isLikelySpaPath = !/\.\w+$/.test(url.pathname)
                         && !url.pathname.startsWith('/api/')
                         && !url.pathname.startsWith('/sub/')
                         && url.pathname !== '/cron';
 
                     if (localResponse.status === 404 && isLikelySpaPath) {
-                        const indexUrl = new URL('/', request.url);
-                        const indexResponse = await env.ASSETS.fetch(new Request(indexUrl, request));
+                        const indexResponse = await fetchSpaEntry(request, env, next);
                         if (indexResponse.status === 200) {
                             localResponse = indexResponse;
                         }
@@ -136,7 +235,8 @@ export async function onRequest(context) {
                     settings = await SettingsCache.get(env) || {};
                 }
 
-                const customLoginPath = settings.customLoginPath ? '/' + settings.customLoginPath.replace(/^\//, '') : '/login';
+                const customLoginPath = normalizeLoginPath(settings?.customLoginPath);
+                const defaultLoginPath = '/login';
 
                 // SPA 路由白名单：这些请求应该交由前端路由处理，而不是作为订阅请求
                 // [修复] 增加更多可能的SPA路由，防止被误判为订阅请求
@@ -144,6 +244,8 @@ export async function onRequest(context) {
                 const isSpaRoute = [
                     '/groups',
                     '/nodes',
+                    '/monitor',
+                    '/vps',
                     '/subscriptions',
                     '/settings',
                     '/login', // 默认 login 仍然需要保留，以便前端处理 "入口" 逻辑
@@ -158,6 +260,7 @@ export async function onRequest(context) {
                     && url.pathname !== '/login'
                     && url.pathname !== customLoginPath
                     && !url.pathname.startsWith('/explore')
+                    && !url.pathname.startsWith('/vps')
                     && url.pathname !== '/offline';
 
                 // Route protection for SPA pages
@@ -165,20 +268,28 @@ export async function onRequest(context) {
                 // [Fix] Exclude /explore from auth check
                 // [Fix] Skip auth check on localhost to avoid port 8787/5173 sync issues during dev
                 // [修复] 排除 /offline 路由的认证检查
+                if (customLoginPath !== defaultLoginPath && url.pathname === defaultLoginPath && !isLocalhost) {
+                    return new Response(null, {
+                        status: 302,
+                        headers: { Location: customLoginPath }
+                    });
+                }
+
                 if (isProtectedSpaRoute && !isLocalhost) {
                     const isAuthenticated = await authMiddleware(request, env);
                     if (!isAuthenticated) {
-                        // Redirect to login page
-                        return new Response(null, {
-                            status: 302,
-                            headers: { Location: '/login' }
-                        });
+                        return createDisguiseResponse(settings?.disguise, request.url);
                     }
                 }
 
                 // [Smart Disguise] Check if we need to disguise the SPA/Root
                 // Only applies to non-static assets
                 if ((url.pathname === '/' || isSpaRoute) && !isStaticAsset) {
+                    if (url.pathname === '/vps') {
+                        // public page should never be disguised
+                        const indexResponse = await fetchSpaEntry(request, env, next);
+                        return applyNoStoreToHtmlResponse(indexResponse);
+                    }
                     // Pass settings to avoid double fetch
                     const disguiseResponse = await handleDisguiseRequest(context, settings);
                     if (disguiseResponse) {
@@ -206,7 +317,7 @@ export async function onRequest(context) {
                 }
 
                 // Continue to static assets or root
-                let response = await next();
+                let response = await fetchStaticAsset(request, env, next);
 
                 // [Fix] SPA Fallback: If asset not found (404) and it's an SPA route OR it's an HTML request, serve index.html
                 const acceptHeader = request.headers.get('Accept') || '';
@@ -216,16 +327,11 @@ export async function onRequest(context) {
                 const isHtmlRequest = isNavigationRequest && acceptHeader.includes('text/html');
 
                 if (response.status === 404 && (isSpaRoute || isHtmlRequest)) {
-                    // Clone the request to fetch index.html
-                    const indexUrl = new URL('/', request.url);
-                    const indexResponse = await env.ASSETS.fetch(new Request(indexUrl, request));
+                    const indexResponse = await fetchSpaEntry(request, env, next);
 
-                    // If index.html exists (e.g. in production or after build), return it
                     if (indexResponse.status === 200) {
                         response = indexResponse;
-                    } else {
-                        // If index.html is missing (likely local dev serving 'public' dir), redirect to Vite dev server
-                        // This assumes standard Vite port 5173.
+                    } else if (isLocalhost) {
                         return new Response(`Redirecting to frontend dev server...`, {
                             status: 302,
                             headers: {
@@ -234,7 +340,6 @@ export async function onRequest(context) {
                             }
                         });
                     }
-
                 }
 
                 return applyNoStoreToHtmlResponse(response);
@@ -245,7 +350,7 @@ export async function onRequest(context) {
             origins: parseCorsOrigins(env, url),
             allowCredentials: true
         };
-        return corsMiddleware(request, () => securityHeadersMiddleware(request, handleRequest), corsOptions);
+        return await corsMiddleware(request, () => securityHeadersMiddleware(request, handleRequest), corsOptions);
     } catch (error) {
         // 全局错误处理
         console.error('[Main Handler Error]', error);

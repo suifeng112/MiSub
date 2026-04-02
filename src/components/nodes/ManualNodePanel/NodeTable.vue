@@ -20,7 +20,9 @@ const props = defineProps({
   basePage: { type: Number, default: 1 },
   baseTotalPages: { type: Number, default: 1 },
   draggableManualNodes: { type: Array, default: () => [] },
-  itemsPerPage: { type: Number, default: 24 } // Added
+  itemsPerPage: { type: Number, default: 24 }, // Added
+  pingResults: { type: Object, default: () => ({}) },
+  pingingNodes: { type: Object, default: () => new Set() }
 });
 
 const emit = defineEmits([
@@ -31,7 +33,8 @@ const emit = defineEmits([
   'sort-end',
   'change-page',
   'update:itemsPerPage', // Added
-  'set-group-filter' // Added
+  'set-group-filter', // Added
+  'ping'
 ]);
 
 const draggableModel = computed({
@@ -64,7 +67,7 @@ const handleChangePage = (page) => {
       <div v-if="viewMode === 'card'">
         <draggable 
           tag="div" 
-          class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-3" 
+          class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-3 gap-4" 
           v-model="draggableModel" 
           item-key="id" 
           animation="300" 
@@ -76,15 +79,18 @@ const handleChangePage = (page) => {
                 :node="node" 
                 :is-selection-mode="isSelectionMode"
                 :is-selected="selectedNodeIds.has(node.id)"
+                :ping-result="pingResults[node.id]"
+                :is-pinging="pingingNodes.has(node.id)"
                 @toggle-select="emit('toggle-select', node.id)"
                 @edit="emit('edit', node.id)" 
                 @delete="emit('delete', node.id)"
-                @filter-group="emit('set-group-filter', $event)" />
+                @filter-group="emit('set-group-filter', $event)"
+                @ping="emit('ping', node.id)" />
             </div>
           </template>
         </draggable>
       </div>
-      <div v-else class="space-y-2">
+      <div v-else class="space-y-3">
         <draggable 
           tag="div" 
           class="space-y-2" 
@@ -100,9 +106,12 @@ const handleChangePage = (page) => {
                 :index="index + 1"
                 class="list-item-animation"
                 :style="{ '--delay-index': Math.min(index, 20) }"
+                :ping-result="pingResults[node.id]"
+                :is-pinging="pingingNodes.has(node.id)"
                 @edit="emit('edit', node.id)"
                 @delete="emit('delete', node.id)"
                 @filter-group="emit('set-group-filter', $event)"
+                @ping="emit('ping', node.id)"
               />
             </div>
           </template>
@@ -112,7 +121,7 @@ const handleChangePage = (page) => {
 
     <div v-else>
       <!-- Flat List Display (No Groups) -->
-      <div v-if="viewMode === 'card'" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-3">
+      <div v-if="viewMode === 'card'" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-3 gap-4">
         <div 
           v-for="(node, index) in paginatedNodes" 
           :key="node.id"
@@ -123,14 +132,17 @@ const handleChangePage = (page) => {
             :node="node" 
             :is-selection-mode="isSelectionMode"
             :is-selected="selectedNodeIds.has(node.id)"
+            :ping-result="pingResults[node.id]"
+            :is-pinging="pingingNodes.has(node.id)"
             @toggle-select="emit('toggle-select', node.id)"
             @edit="emit('edit', node.id)" 
             @delete="emit('delete', node.id)" 
             @filter-group="emit('set-group-filter', $event)" 
+            @ping="emit('ping', node.id)"
           />
         </div>
       </div>
-      <div v-else class="space-y-2">
+      <div v-else class="space-y-3">
         <ManualNodeList
           v-for="(node, index) in paginatedNodes"
           :key="node.id"
@@ -140,10 +152,13 @@ const handleChangePage = (page) => {
           :style="{ '--delay-index': Math.min(index, 20) }"
           :is-selection-mode="isSelectionMode"
           :is-selected="selectedNodeIds.has(node.id)"
+          :ping-result="pingResults[node.id]"
+          :is-pinging="pingingNodes.has(node.id)"
           @toggle-select="emit('toggle-select', node.id)"
           @edit="emit('edit', node.id)"
           @delete="emit('delete', node.id)"
           @filter-group="emit('set-group-filter', $event)"
+          @ping="emit('ping', node.id)"
         />
       </div>
     </div>
@@ -160,7 +175,7 @@ const handleChangePage = (page) => {
       @update:items-per-page="emit('update:itemsPerPage', $event)"
     />
   </div>
-  <div v-else class="py-4 border-2 border-dashed border-gray-300 dark:border-gray-700 misub-radius-lg">
+  <div v-else class="py-6 border-2 border-dashed border-gray-300 dark:border-gray-700 bg-white/60 dark:bg-gray-900/50 misub-radius-lg">
     <EmptyState 
       title="没有手动节点" 
       description="添加分享链接或单个节点。" 

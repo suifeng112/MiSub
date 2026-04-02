@@ -6,7 +6,7 @@
 /**
  * 判断是否为浏览器请求（用于伪装/公开页逻辑）
  * 排除常见的代理客户端 User-Agent
- * @param {string} userAgent 
+ * @param {string} userAgent
  * @returns {boolean}
  */
 export function isBrowserAgent(userAgent) {
@@ -30,7 +30,7 @@ export function determineTargetFormat(userAgent, searchParams) {
     // 1. Check URL parameters first
     let targetFormat = searchParams.get('target');
     if (!targetFormat) {
-        const supportedFormats = ['clash', 'singbox', 'surge', 'loon', 'base64', 'v2ray', 'trojan'];
+        const supportedFormats = ['clash', 'singbox', 'surge', 'loon', 'base64', 'v2ray', 'trojan', 'quanx'];
         for (const format of supportedFormats) {
             if (searchParams.has(format)) {
                 // Normalize v2ray/trojan to base64 as they share the output format
@@ -40,7 +40,21 @@ export function determineTargetFormat(userAgent, searchParams) {
         }
     }
 
-    if (targetFormat) return targetFormat;
+    if (targetFormat) {
+        const normalizedTarget = targetFormat.toLowerCase();
+        if (normalizedTarget === 'singbox' || normalizedTarget === 'sing-box') {
+            return 'base64';
+        }
+        if (normalizedTarget === 'surge') {
+            const ver = searchParams.get('ver');
+            const safeVer = ver && /^\d+$/.test(ver) ? parseInt(ver, 10) : 4;
+            return `surge&ver=${safeVer}`;
+        }
+        if (normalizedTarget.startsWith('surge&ver=')) {
+            return normalizedTarget;
+        }
+        return targetFormat;
+    }
 
     // 2. Check User-Agent
     const ua = (userAgent || '').toLowerCase();
@@ -52,9 +66,12 @@ export function determineTargetFormat(userAgent, searchParams) {
         if (surgeMatch) {
             const version = parseInt(surgeMatch[1], 10);
             // Subconverter primarily supports &ver=2, 3, 4. For versions >= 4, use 4.
-            return `surge&ver=${version >= 4 ? 4 : Math.max(2, version)}`;
+            // iOS Surge特别处理：优先使用最新兼容版本
+            const iosSurgeVer = ua.includes('surge/') && !ua.includes('mac') ? 4 : Math.max(2, version);
+            return `surge&ver=${iosSurgeVer}`;
         }
-        return 'surge&ver=4';
+        // 默认iOS Surge使用版本4
+        return ua.includes('surge/') && !ua.includes('mac') ? 'surge&ver=4' : 'surge&ver=4';
     }
 
     // Mapping array to ensure priority order
@@ -71,7 +88,8 @@ export function determineTargetFormat(userAgent, searchParams) {
         // Other Clients
         ['stash', 'clash'],
         ['nekoray', 'clash'],
-        ['sing-box', 'singbox'],
+        ['sing-box', 'base64'],
+        ['singbox', 'base64'],
         ['shadowrocket', 'base64'],
         ['v2rayn', 'base64'],
         ['v2rayng', 'base64'],

@@ -3,13 +3,20 @@
  * 处理各种API请求
  */
 
-import { StorageFactory, SettingsCache } from '../storage-adapter.js';
+import { StorageFactory, SettingsCache, STORAGE_TYPES } from '../storage-adapter.js';
 import { getCookieSecret, getAdminPassword, setAdminPassword, isUsingDefaultPassword, createJsonResponse, createErrorResponse, migrateProfileIds } from './utils.js';
 import { authMiddleware, handleLogin, handleLogout, createUnauthorizedResponse } from './auth-middleware.js';
 import { sendTgNotification, checkAndNotify } from './notifications.js';
 import { clearAllNodeCaches } from '../services/node-cache-service.js';
 
 import { KV_KEY_SUBS, KV_KEY_PROFILES, KV_KEY_SETTINGS, DEFAULT_SETTINGS as defaultSettings } from './config.js';
+
+function isStorageUnavailableError(error) {
+    const message = String(error?.message || error || '').toLowerCase();
+    return message.includes('kv storage is paused')
+        || message.includes('storage is paused')
+        || message.includes('namespace is paused');
+}
 
 /**
  * 获取存储适配器实例
@@ -33,7 +40,7 @@ export async function handleDataRequest(env) {
         if (storageType === 'd1' && !env.MISUB_DB) {
             console.error('[API Error /data] D1 binding missing while storageType=d1');
         }
-        if (storageType === 'kv' && !env.MISUB_KV) {
+        if (storageType === 'kv' && !StorageFactory.resolveKV(env)) {
             console.error('[API Error /data] KV binding missing while storageType=kv');
         }
         const storageAdapter = StorageFactory.createAdapter(env, storageType);
@@ -50,10 +57,8 @@ export async function handleDataRequest(env) {
             );
         }
         const config = {
-            FileName: settings.FileName || 'MISUB',
-            mytoken: settings.mytoken || 'auto',
-
-            profileToken: settings.profileToken || 'profiles',
+            ...defaultSettings,
+            ...settings,
             isDefaultPassword: await isUsingDefaultPassword(env)
         };
         return createJsonResponse({ misubs, profiles, config });
@@ -61,7 +66,7 @@ export async function handleDataRequest(env) {
         console.error('[API Error /data] Failed to read from storage', {
             error: e?.message,
             storageType,
-            hasKv: !!env?.MISUB_KV,
+            hasKv: !!StorageFactory.resolveKV(env),
             hasD1: !!env?.MISUB_DB
         });
         return createErrorResponse(e, 500);
@@ -230,6 +235,13 @@ export async function handleSettingsGet(env) {
         const settings = await storageAdapter.get(KV_KEY_SETTINGS) || {};
         return createJsonResponse({ ...defaultSettings, ...settings });
     } catch (e) {
+        if (isStorageUnavailableError(e)) {
+            return createJsonResponse({
+                ...defaultSettings,
+                storageType: 'kv',
+                storageUnavailable: true
+            });
+        }
         return createErrorResponse('读取设置失败', 500);
     }
 }
@@ -244,16 +256,45 @@ export async function handleSettingsSave(request, env) {
     try {
         const newSettings = await request.json();
 
-        // 校验 customLoginPath 是否为系统保留路径
-        if (newSettings.customLoginPath) {
-            const reservedPaths = ['settings', 'login', 'groups', 'nodes', 'subscriptions', 'dashboard', 'api', 'explore'];
-            const pathSegment = newSettings.customLoginPath.replace(/^\/+/, '').split('/')[0].toLowerCase();
-            if (reservedPaths.includes(pathSegment)) {
+        const reservedPathRoots = new Set([
+            'settings', 'login', 'groups', 'nodes', 'subscriptions', 'dashboard',
+            'api', 'explore', 'sub', 'cron', 'assets', '@vite', 'public', 'profile', 'offline',
+            'vps', 'monitor', 'logout', 'auth_debug', 'auth_check', 'data', 'kv_test',
+            'clients', 'system', 'github', 'telegram', 'test_notification', 'test_subconverter',
+            'misubs', 'node_count', 'nodes', 'fetch_external_url', 'batch_update_nodes',
+            'subscription_nodes', 'debug_subscription', 'preview'
+        ]);
+
+        const normalizePathRoot = (value) => {
+            if (typeof value !== 'string') return '';
+            return value.trim().replace(/^\/+/, '').split('/')[0].toLowerCase();
+        };
+
+        const rejectReservedValue = (value, fieldLabel) => {
+            const pathRoot = normalizePathRoot(value);
+            if (pathRoot && reservedPathRoots.has(pathRoot)) {
                 return createJsonResponse({
                     success: false,
-                    message: `"/${pathSegment}" 是系统保留路径，不可用作自定义登录路径`
+                    message: `"/${pathRoot}" 是系统保留路径，不可用作${fieldLabel}`
                 }, 400);
             }
+            return null;
+        };
+
+        // 校验 customLoginPath 是否为系统保留路径
+        if (newSettings.customLoginPath) {
+            const rejected = rejectReservedValue(newSettings.customLoginPath, '自定义登录路径');
+            if (rejected) return rejected;
+        }
+
+        // 订阅 Token 也不能使用会和路由冲突的保留路径
+        if (newSettings.mytoken && newSettings.mytoken !== 'auto') {
+            const rejected = rejectReservedValue(newSettings.mytoken, '自定义订阅Token');
+            if (rejected) return rejected;
+        }
+        if (newSettings.profileToken && newSettings.profileToken !== 'profiles') {
+            const rejected = rejectReservedValue(newSettings.profileToken, '订阅组分享Token');
+            if (rejected) return rejected;
         }
 
         const storageAdapter = await getStorageAdapter(env);
@@ -261,7 +302,31 @@ export async function handleSettingsSave(request, env) {
         const finalSettings = { ...oldSettings, ...newSettings };
 
         // 使用存储适配器保存设置
-        await storageAdapter.put(KV_KEY_SETTINGS, finalSettings);
+        try {
+            await storageAdapter.put(KV_KEY_SETTINGS, finalSettings);
+        } catch (storageError) {
+            if (isStorageUnavailableError(storageError)) {
+                return createJsonResponse({
+                    success: false,
+                    message: 'KV 存储已暂停，设置当前无法保存。若为 EdgeOne 部署，请先恢复 KV；若为 Cloudflare 部署，可配置 D1 后切换到 D1 存储。'
+                }, 503);
+            }
+            throw storageError;
+        }
+
+        // 双存储同步：尽量保持 KV / D1 一致
+        try {
+            const d1Adapter = StorageFactory.createAdapter(env, STORAGE_TYPES.D1);
+            await d1Adapter.put(KV_KEY_SETTINGS, finalSettings);
+        } catch (syncError) {
+            console.warn('[API] Failed to sync settings to D1:', syncError?.message || syncError);
+        }
+        try {
+            const kvAdapter = StorageFactory.createAdapter(env, STORAGE_TYPES.KV);
+            await kvAdapter.put(KV_KEY_SETTINGS, finalSettings);
+        } catch (syncError) {
+            console.warn('[API] Failed to sync settings to KV:', syncError?.message || syncError);
+        }
         SettingsCache.clear();
 
         // 清除节点缓存（设置变更可能影响节点处理逻辑）
@@ -274,7 +339,7 @@ export async function handleSettingsSave(request, env) {
         const message = `⚙️ *MiSub 设置更新* ⚙️\n\n您的 MiSub 应用设置已成功更新。`;
         await sendTgNotification(finalSettings, message);
 
-        return createJsonResponse({ success: true, message: '设置已保存' });
+        return createJsonResponse({ success: true, message: '设置已保存', data: finalSettings });
     } catch (e) {
         return createErrorResponse('保存设置失败', 500);
     }
@@ -363,7 +428,9 @@ export async function handlePublicConfig(env) {
 
         return createJsonResponse({
             enablePublicPage: mergedSettings.enablePublicPage,
-            customLoginPath: mergedSettings.customLoginPath
+            customLoginPath: mergedSettings.customLoginPath,
+            vpsPublicHeaderEnabled: mergedSettings?.vpsMonitor?.publicPageShowHeader !== false,
+            vpsPublicFooterEnabled: mergedSettings?.vpsMonitor?.publicPageShowFooter !== false
         });
     } catch (e) {
         console.error('[API Error /public/config]', e);

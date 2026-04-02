@@ -6,6 +6,8 @@ const SubscriptionGroupsView = () => import('../views/SubscriptionGroupsView.vue
 const ManualNodesView = () => import('../views/ManualNodesView.vue');
 const MySubscriptionsView = () => import('../views/MySubscriptionsView.vue');
 const SettingsView = () => import('../views/SettingsView.vue');
+const VpsMonitorView = () => import('../views/VpsMonitorView.vue');
+const PublicVpsMonitorView = () => import('../views/PublicVpsMonitorView.vue');
 
 const HomeView = () => import('../views/HomeView.vue'); // [NEW] Wrapper View
 
@@ -14,8 +16,13 @@ const routes = [
         path: '/',  // Root path is HomeView (Smart Wrapper)
         name: 'Home',
         component: HomeView,
-        alias: '/explore',
         meta: { title: '首页', isPublic: true } // Publicly accessible, view handles content
+    },
+    {
+        path: '/explore',
+        name: 'Explore',
+        component: HomeView,
+        meta: { title: '公开页', isPublic: true }
     },
     {
         path: '/dashboard', // Explicit dashboard route redirects to home or is alias
@@ -38,6 +45,18 @@ const routes = [
         name: 'MySubscriptions',
         component: MySubscriptionsView,
         meta: { title: '我的订阅' }
+    },
+    {
+        path: '/monitor',
+        name: 'VpsMonitor',
+        component: VpsMonitorView,
+        meta: { title: 'VPS探针' }
+    },
+    {
+        path: '/vps',
+        name: 'PublicVpsMonitor',
+        component: PublicVpsMonitorView,
+        meta: { title: 'VPS探针公开页', isPublic: true }
     },
     {
         path: '/settings',
@@ -72,6 +91,19 @@ const router = createRouter({
             return savedPosition;
         } else {
             return { top: 0 };
+        }
+    }
+});
+
+// 自动恢复动态 chunk 加载失败导致的白屏
+router.onError((error) => {
+    const message = error?.message || '';
+    if (message.includes('Failed to fetch dynamically imported module')
+        || message.includes('error loading dynamically imported module')) {
+        const reloadKey = 'misub:chunk-reload';
+        if (sessionStorage.getItem(reloadKey) !== '1') {
+            sessionStorage.setItem(reloadKey, '1');
+            window.location.reload();
         }
     }
 });

@@ -7,10 +7,12 @@ const props = defineProps({
     required: true
   },
   isSelectionMode: Boolean,
-  isSelected: Boolean
+  isSelected: Boolean,
+  pingResult: Object,
+  isPinging: Boolean
 });
 
-const emit = defineEmits(['delete', 'edit', 'toggle-select', 'filter-group']);
+const emit = defineEmits(['delete', 'edit', 'toggle-select', 'filter-group', 'ping']);
 
 const getProtocol = (url) => {
   // ... (protocol logic unchanged)
@@ -65,7 +67,7 @@ const protocolStyle = computed(() => {
 
 <template>
   <div 
-    class="group glass-panel p-3 card-hover relative flex items-center justify-between gap-3 transition-all duration-300 hover:shadow-lg hover:shadow-primary-500/10 min-h-[60px]"
+    class="group glass-panel p-3 card-hover relative flex items-center justify-between gap-3 transition-all duration-300 hover:shadow-lg hover:shadow-primary-500/10 min-h-[64px]"
     :class="{ 
         'opacity-50 grayscale': !node.enabled && !isSelectionMode,
         'ring-2 ring-primary-500 bg-primary-50 dark:bg-primary-900/10': isSelectionMode && isSelected,
@@ -81,11 +83,11 @@ const protocolStyle = computed(() => {
         </div>
     </div>
 
-    <div class="flex items-center gap-3 overflow-hidden flex-1 min-w-0">
+    <div class="flex items-center gap-2 overflow-hidden flex-1 min-w-0">
       <!-- Group Badge -->
       <div 
         v-if="node.group" 
-        class="text-[10px] font-medium px-1.5 py-0.5 misub-radius-md bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 shrink-0 max-w-[80px] truncate cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors" 
+        class="text-[10px] font-medium px-1.5 py-0.5 misub-radius-md bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 shrink-0 max-w-[90px] truncate cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors" 
         :title="node.group"
         @click.stop="$emit('filter-group', node.group)"
       >
@@ -93,7 +95,7 @@ const protocolStyle = computed(() => {
       </div>
       
       <div 
-        class="text-xs font-bold px-2 py-0.5 rounded-full shrink-0"
+        class="text-[11px] font-semibold px-2 py-0.5 rounded-full shrink-0"
         :class="protocolStyle.style"
       >
         {{ protocolStyle.text }}
@@ -101,9 +103,31 @@ const protocolStyle = computed(() => {
       <p class="font-medium text-sm text-gray-800 dark:text-gray-100 truncate flex-1 min-w-0" :title="node.name">
         {{ node.name || '未命名节点' }}
       </p>
+
+      <!-- Ping Result Badge -->
+      <div v-if="pingResult" class="text-[10px] font-medium px-1.5 py-0.5 misub-radius-md shrink-0 flex flex-row items-center gap-1"
+           :class="{
+              'bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400': pingResult.status === 'ok' && pingResult.latency < 300,
+              'bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400': pingResult.status === 'ok' && pingResult.latency >= 300,
+              'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400': pingResult.status === 'error' || pingResult.status === 'timeout',
+              'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400': pingResult.status === 'loading'
+           }"
+           :title="pingResult.message || (pingResult.status === 'ok' ? '连通正常' : '连通失败')"
+      >
+        <svg v-if="pingResult.status === 'loading'" class="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        <span v-if="pingResult.status === 'loading'">测速中</span>
+        <span v-else-if="pingResult.status === 'ok'">{{ pingResult.latency }}ms</span>
+        <span v-else>不通</span>
+      </div>
     </div>
 
-    <div v-if="!isSelectionMode" class="shrink-0 flex items-center gap-1 xl:opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+    <div v-if="!isSelectionMode" class="shrink-0 flex items-center gap-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity duration-200">
+        <button @click.stop="emit('ping')" class="p-1.5 misub-radius-md hover:bg-green-500/10 text-gray-400 hover:text-green-500" title="测速" :disabled="isPinging" :class="{ 'animate-pulse text-green-500': isPinging }">
+           <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+        </button>
         <button @click.stop="emit('edit')" class="p-1.5 misub-radius-md hover:bg-gray-500/10 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200" title="编辑节点">
           <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.536L16.732 3.732z" /></svg>
         </button>
@@ -113,5 +137,4 @@ const protocolStyle = computed(() => {
     </div>
   </div>
 </template>
-
 
